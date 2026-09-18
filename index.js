@@ -79,14 +79,12 @@ const allowedOrigins = [
   "http://localhost:5173",
 
   "http://zozo.com.bd",
-  "http://www.zozo.com.bd",
+  "http://kroykori.com",
 
-  "https://zozo.com.bd",
-  "https://www.zozo.com.bd",
+  "https://kroykori.com",
+  "https://www.kroykori.com",
 
-  "https://zozo-ecommece-frontend.vercel.app",
-  "https://zozo-backend.vercel.app",
-  "https://zozo-backend-app.up.railway.app",
+ 
 ];
 
 /* =====================================================
