@@ -432,6 +432,7 @@ export const getPublicProducts = async (req, res) => {
     status
     regularPrice
     flashSale
+    preBook
     shop
     productSource
   `,
