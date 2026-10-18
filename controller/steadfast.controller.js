@@ -1,9 +1,13 @@
-// Place this file at: backend/controller/steadfast.controller.js
-// Requires Node.js 18+ (built-in fetch).
+
 import mongoose from "mongoose";
 import { Order } from "../model/index.model.js";
 
-const COURIER_URL = "https://portal.packzy.com/api/v1/create_order";
+const BASE_URL = (
+  process.env.STEADFAST_BASE_URL ||
+  "https://portal.packzy.com/api/v1"
+).replace(/\/+$/, "");
+
+const COURIER_URL = `${BASE_URL}/create_order`;
 
 const normalizeBdPhone = (input) => {
   const digits = String(input || "").replace(/\D/g, "");
@@ -23,6 +27,8 @@ export const sendOrderToSteadfast = async (req, res) => {
   }
 
   let locked = false;
+  let stage = "validation";
+  let courierHttpStatus = null;
   try {
     const order = await Order.findById(orderId).lean();
     if (!order) return res.status(404).json({ message: "Order not found" });
@@ -54,53 +60,23 @@ export const sendOrderToSteadfast = async (req, res) => {
       return res.status(422).json({ message: "Enter a complete delivery address (10–250 characters)" });
     }
 
-    const paymentMethod = String(
-      order.paymentMethod || ""
-    ).trim().toLowerCase();
-
-    const paymentStatus = String(
-      order.paymentStatus || "unpaid"
-    ).trim().toLowerCase();
-
-    console.log("Steadfast Payment Check:", {
-      paymentMethod,
-      paymentStatus,
-    });
-
-    const isCOD = [
-      "cash on delivery",
-      "cash",
-      "cod",
-    ].includes(paymentMethod);
-
-    const isPrepaid = [
-      "bkash",
-      "nagad",
-    ].includes(paymentMethod);
-
-    // Unknown payment method
-    if (!isCOD && !isPrepaid) {
-      return res.status(422).json({
-        message: "Unsupported payment method",
-      });
-    }
-
-    // Prepaid payment must be verified
-    if (isPrepaid && paymentStatus !== "paid") {
+    // Admin manually confirms customer details before booking.
+    // bKash/manual payment states do not automatically block courier submission.
+    // This action never changes paymentStatus or verifies a payment.
+    if (req.body?.phoneConfirmed !== true) {
       return res.status(409).json({
-        message: "Verify prepaid payment first",
+        message: "Confirm the customer by phone before booking courier",
       });
     }
 
-    // Customer pays courier on delivery
-    const codAmount =
-      isCOD && paymentStatus !== "paid"
-        ? Number(order.totalPrice || 0)
-        : 0;
-
-    if (!Number.isFinite(codAmount) || codAmount < 0) {
-      return res.status(422).json({ message: "Invalid COD amount" });
+    // Send the exact stored order TOTAL as the initial Steadfast COD amount.
+    // Any amount adjustment must be made in Steadfast before dispatch/delivery.
+    // This may INCLUDE delivery charge: no shipping-cost deduction is performed.
+    const orderTotal = Number(order.totalPrice);
+    if (!Number.isFinite(orderTotal) || orderTotal < 0) {
+      return res.status(422).json({ message: "Invalid order total" });
     }
+    const codAmount = Math.round(orderTotal * 100) / 100;
 
     const invoiceCode = `KK-${order._id}`; // Stable, unique on Steadfast
 
@@ -141,6 +117,7 @@ export const sendOrderToSteadfast = async (req, res) => {
         .slice(0, 200),
     };
 
+    stage = "calling_steadfast";
     const response = await fetch(COURIER_URL, {
       method: "POST",
       headers: {
@@ -152,12 +129,46 @@ export const sendOrderToSteadfast = async (req, res) => {
       signal: AbortSignal.timeout(20000),
     });
 
-    const result = await response.json().catch(() => ({}));
+    courierHttpStatus = response.status;
+    stage = "reading_steadfast_response";
+
+    // A provider error can arrive as JSON or HTML. Never log API keys or the
+    // full request payload (which contains customer contact information).
+    const rawBody = await response.text();
+    let result = {};
+    try {
+      result = rawBody ? JSON.parse(rawBody) : {};
+    } catch {
+      console.error("Steadfast response is not JSON:", {
+        invoice: invoiceCode,
+        httpStatus: response.status,
+        contentType: response.headers.get("content-type"),
+      });
+    }
+
     const consignment = result?.consignment;
     if (!response.ok || Number(result?.status) !== 200 ||
         !consignment?.consignment_id || !consignment?.tracking_code) {
-      throw new Error("Steadfast did not confirm consignment creation");
+      console.error("Steadfast API rejected/unconfirmed:", {
+        invoice: invoiceCode,
+        httpStatus: response.status,
+        apiStatus: result?.status ?? null,
+        message: result?.message ?? null,
+        errors: result?.errors ?? null,
+        hasConsignmentId: Boolean(consignment?.consignment_id),
+        hasTrackingCode: Boolean(consignment?.tracking_code),
+      });
+      throw new Error(`Steadfast did not confirm consignment creation (HTTP ${response.status})`);
     }
+
+    // The provider has reported a created consignment. A DB failure after
+    // this point MUST NOT trigger another create_order attempt.
+    stage = "saving_tracking_to_mongodb";
+    console.info("Steadfast consignment confirmed:", {
+      invoice: invoiceCode,
+      consignmentId: consignment.consignment_id,
+      // Deliberately omit customer details and API credentials.
+    });
 
     const updatedOrder = await Order.findOneAndUpdate(
       { _id: order._id, "steadfast.status": "creating", "steadfast.invoice": invoiceCode },
@@ -191,7 +202,15 @@ export const sendOrderToSteadfast = async (req, res) => {
         { $set: { "steadfast.status": "needs_review" } },
       ).catch(() => {});
     }
-    console.error("Steadfast submission error:", error.message);
+    console.error("Steadfast submission error:", {
+      invoice: `KK-${orderId}`,
+      stage,
+      httpStatus: courierHttpStatus,
+      errorName: error?.name,
+      message: error?.message,
+      code: error?.code || error?.cause?.code || null,
+      // Never print API keys/Secret-Key or the full request payload.
+    });
     return res.status(502).json({
       message: "Steadfast submission could not be confirmed. Check the courier portal using the order invoice before any retry.",
     });

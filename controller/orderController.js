@@ -1252,6 +1252,10 @@ export const getAllOrders = async (req, res) => {
   }
 };
 
+
+// Copy ONLY this function into your existing backend/controller/orderController.js.
+// It uses the module's existing mongoose, Order, Invoice, notifyUser,
+// ensureManualPaymentVerified, syncParentOrderStatus, and processSellerEarning.
 export const updateOrderStatus = async (req, res) => {
   const { orderId } = req.params;
 
@@ -1267,9 +1271,7 @@ export const updateOrderStatus = async (req, res) => {
   const trackingCode = String(req.body?.trackingCode || "").trim();
 
   if (!mongoose.isValidObjectId(orderId)) {
-    return res.status(400).json({
-      message: "Invalid order ID",
-    });
+    return res.status(400).json({ message: "Invalid order ID" });
   }
 
   if (!orderStatus && !paymentStatus) {
@@ -1279,26 +1281,16 @@ export const updateOrderStatus = async (req, res) => {
   }
 
   const validOrderStatuses = [
-    "pending",
-    "confirmed",
-    "processing",
-    "shipped",
-    "delivered",
-    "cancelled",
+    "pending", "confirmed", "processing", "shipped", "delivered", "cancelled",
   ];
-
   const validPaymentStatuses = ["unpaid", "paid"];
 
   if (orderStatus && !validOrderStatuses.includes(orderStatus)) {
-    return res.status(422).json({
-      message: "Invalid order status",
-    });
+    return res.status(422).json({ message: "Invalid order status" });
   }
 
   if (paymentStatus && !validPaymentStatuses.includes(paymentStatus)) {
-    return res.status(422).json({
-      message: "Invalid payment status",
-    });
+    return res.status(422).json({ message: "Invalid payment status" });
   }
 
   if (orderStatus === "shipped" && (!courierName || !trackingCode)) {
@@ -1314,7 +1306,6 @@ export const updateOrderStatus = async (req, res) => {
   }
 
   const session = await mongoose.startSession();
-
   let savedOrder = null;
   const sellerRecipients = new Set();
 
@@ -1322,7 +1313,6 @@ export const updateOrderStatus = async (req, res) => {
     await session.withTransaction(
       async () => {
         const order = await Order.findById(orderId).session(session);
-
         if (!order) {
           const error = new Error("Order not found");
           error.statusCode = 404;
@@ -1336,27 +1326,35 @@ export const updateOrderStatus = async (req, res) => {
         }
 
         if (paymentStatus && ["bKash", "Nagad"].includes(order.paymentMethod)) {
-          const error = new Error(
-            "Use the manual payment verification endpoint",
-          );
+          const error = new Error("Use the manual payment verification endpoint");
           error.statusCode = 422;
           throw error;
         }
+
+        // Phone-confirming a legacy order is NOT payment verification.
+        // The old order may lack newly-required schema fields, so this path
+        // must be updated atomically instead of using order.save().
+        const isPhoneConfirm =
+          !paymentStatus &&
+          ["confirmed", "processing"].includes(orderStatus) &&
+          ["pending", "confirmed"].includes(order.orderStatus);
 
         if (orderStatus) {
           const fulfillmentStatus =
             orderStatus === "confirmed" ? "processing" : orderStatus;
 
-          ensureManualPaymentVerified(order, fulfillmentStatus);
+          // Keep the original payment gate for shipping/delivery.
+          // Phone confirmation by itself must not mark money as received.
+          if (!isPhoneConfirm) {
+            ensureManualPaymentVerified(order, fulfillmentStatus);
+          }
         }
 
         if (
           paymentStatus === "unpaid" &&
           order.sellerOrders.some((item) => item.orderStatus === "delivered")
         ) {
-          const error = new Error(
-            "Delivered order cannot be changed back to unpaid",
-          );
+          const error = new Error("Delivered order cannot be changed back to unpaid");
           error.statusCode = 422;
           throw error;
         }
@@ -1380,7 +1378,6 @@ export const updateOrderStatus = async (req, res) => {
             if (sellerStatus === "shipped") {
               sellerOrder.courierName = courierName;
               sellerOrder.trackingCode = trackingCode;
-
               if ("shippedAt" in sellerOrder) {
                 sellerOrder.shippedAt = sellerOrder.shippedAt || new Date();
               }
@@ -1389,12 +1386,7 @@ export const updateOrderStatus = async (req, res) => {
             if (sellerStatus === "delivered") {
               sellerOrder.deliveredAt = sellerOrder.deliveredAt || new Date();
               sellerOrder.paymentStatus = "paid";
-
-              await processSellerEarning({
-                order,
-                sellerOrder,
-                session,
-              });
+              await processSellerEarning({ order, sellerOrder, session });
             }
 
             if (sellerOrder.seller) {
@@ -1404,6 +1396,10 @@ export const updateOrderStatus = async (req, res) => {
 
           if (orderStatus === "pending") {
             order.orderStatus = orderStatus;
+          } else if (isPhoneConfirm) {
+            // syncParentOrderStatus() must not see an empty sellerOrders array;
+            // Array.every() on [] can incorrectly determine 'cancelled'.
+            order.orderStatus = "processing";
           } else {
             syncParentOrderStatus(order);
           }
@@ -1411,13 +1407,11 @@ export const updateOrderStatus = async (req, res) => {
 
         if (paymentStatus) {
           order.paymentStatus = paymentStatus;
-
           for (const sellerOrder of order.sellerOrders) {
             if (sellerOrder.orderStatus !== "cancelled") {
               sellerOrder.paymentStatus = paymentStatus;
             }
           }
-
           if (paymentStatus === "paid") {
             order.paidAt = order.paidAt || new Date();
           } else {
@@ -1430,42 +1424,58 @@ export const updateOrderStatus = async (req, res) => {
           order.paidAt = order.paidAt || new Date();
         }
 
-        await order.save({
-          session,
-        });
+        if (isPhoneConfirm) {
+          // UPDATE VALIDATORS only check modified paths, rather than
+          // revalidating missing legacy fields (subtotal/productName/etc).
+          const set = { orderStatus: "processing" };
+          order.sellerOrders.forEach((sellerOrder, index) => {
+            if (!["cancelled", "delivered"].includes(sellerOrder.orderStatus)) {
+              set[`sellerOrders.${index}.orderStatus`] = "processing";
+            }
+          });
 
-        if (order.invoiceId) {
+          savedOrder = await Order.findOneAndUpdate(
+            {
+              _id: orderId,
+              orderStatus: { $in: ["pending", "confirmed"] },
+            },
+            { $set: set },
+            { new: true, session, runValidators: true },
+          );
+          if (!savedOrder) {
+            const error = new Error("Order was already confirmed or changed");
+            error.statusCode = 409;
+            throw error;
+          }
+        } else {
+          // Unchanged logic for other operations, including shipped/delivered.
+          await order.save({ session });
+          savedOrder = order;
+        }
+
+        if (savedOrder.invoiceId) {
           const invoiceStatus =
-            order.paymentStatus === "paid"
+            savedOrder.paymentStatus === "paid"
               ? "paid"
-              : order.paymentStatus === "refunded"
+              : savedOrder.paymentStatus === "refunded"
                 ? "refunded"
                 : "unpaid";
 
           await Invoice.findByIdAndUpdate(
-            order.invoiceId,
+            savedOrder.invoiceId,
             {
               $set: {
                 status: invoiceStatus,
-                paidAt: invoiceStatus === "paid" ? order.paidAt : null,
+                paidAt: invoiceStatus === "paid" ? savedOrder.paidAt : null,
               },
             },
-            {
-              session,
-              runValidators: true,
-            },
+            { session, runValidators: true },
           );
         }
-
-        savedOrder = order;
       },
       {
-        readConcern: {
-          level: "snapshot",
-        },
-        writeConcern: {
-          w: "majority",
-        },
+        readConcern: { level: "snapshot" },
+        writeConcern: { w: "majority" },
       },
     );
 
@@ -1485,10 +1495,8 @@ export const updateOrderStatus = async (req, res) => {
           metadata: {
             orderStatus: savedOrder.orderStatus,
             paymentStatus: savedOrder.paymentStatus,
-            courierName:
-              savedOrder.orderStatus === "shipped" ? courierName : "",
-            trackingCode:
-              savedOrder.orderStatus === "shipped" ? trackingCode : "",
+            courierName: savedOrder.orderStatus === "shipped" ? courierName : "",
+            trackingCode: savedOrder.orderStatus === "shipped" ? trackingCode : "",
           },
         }),
       ),
@@ -1499,22 +1507,19 @@ export const updateOrderStatus = async (req, res) => {
         recipient: savedOrder.user,
         sender: req.user?._id || req.user?.id,
         type: savedOrder.orderStatus === "delivered" ? "delivery" : "order",
-        title:
-          savedOrder.orderStatus === "shipped"
-            ? "Your order has been shipped"
-            : "Order updated",
-        message:
-          savedOrder.orderStatus === "shipped"
-            ? `Your order #${savedOrder._id} has been shipped via ${courierName}. Tracking code: ${trackingCode}.`
-            : `Your order #${savedOrder._id} is now ${savedOrder.orderStatus}.`,
+        title: savedOrder.orderStatus === "shipped"
+          ? "Your order has been shipped"
+          : "Order updated",
+        message: savedOrder.orderStatus === "shipped"
+          ? `Your order #${savedOrder._id} has been shipped via ${courierName}. Tracking code: ${trackingCode}.`
+          : `Your order #${savedOrder._id} is now ${savedOrder.orderStatus}.`,
         orderId: savedOrder._id,
         actionUrl: `/orders/${savedOrder._id}`,
         metadata: {
           orderStatus: savedOrder.orderStatus,
           paymentStatus: savedOrder.paymentStatus,
           courierName: savedOrder.orderStatus === "shipped" ? courierName : "",
-          trackingCode:
-            savedOrder.orderStatus === "shipped" ? trackingCode : "",
+          trackingCode: savedOrder.orderStatus === "shipped" ? trackingCode : "",
         },
       }).catch((error) => {
         console.error("Customer update notification failed:", error);
@@ -1522,21 +1527,18 @@ export const updateOrderStatus = async (req, res) => {
     }
 
     return res.status(200).json({
-      message:
-        savedOrder.orderStatus === "shipped"
-          ? "Order shipped successfully"
-          : "Order updated successfully",
+      message: savedOrder.orderStatus === "shipped"
+        ? "Order shipped successfully"
+        : "Order updated successfully",
       order: savedOrder,
     });
   } catch (error) {
     console.error("updateOrderStatus error:", error);
-
     if (error?.code === 11000) {
       return res.status(409).json({
         message: "Seller earning was already processed",
       });
     }
-
     return res.status(error.statusCode || 500).json({
       message: error.message || "Error updating order",
     });
