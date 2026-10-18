@@ -48,6 +48,7 @@ import {
   getAdminSellerOrderById,
   updateAdminSellerOrderStatus,
 } from "../controller/orderController.js";
+import { sendOrderToSteadfast } from "../controller/steadfast.controller.js";
 
 const router = express.Router();
 
@@ -100,6 +101,14 @@ router.get(
 router.patch(
   "/guest/orders/:orderId/cancel",
   cancelGuestOrder,
+);
+
+
+router.post(
+  "/order/:orderId/steadfast",
+  protect,
+  ensureAdmin,
+  sendOrderToSteadfast,
 );
 
 /* =====================================================

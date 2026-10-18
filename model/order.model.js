@@ -377,80 +377,80 @@ const orderSchema = new Schema(
     },
 
     paymentMethod: {
-  type: String,
-  enum: [
-    "Cash on Delivery",
-    "bKash",
-    "Nagad",
+      type: String,
+      enum: [
+        "Cash on Delivery",
+        "bKash",
+        "Nagad",
 
-    // পুরোনো order compatibility
-    "Cash",
-    "Bkash",
-  ],
-  required: true,
-},
+        // পুরোনো order compatibility
+        "Cash",
+        "Bkash",
+      ],
+      required: true,
+    },
 
-paymentStatus: {
-  type: String,
-  enum: [
-    "unpaid",
-    "pending_verification",
-    "paid",
-    "rejected",
-    "partial",
-    "refunded",
-  ],
-  default: "unpaid",
-  index: true,
-},
+    paymentStatus: {
+      type: String,
+      enum: [
+        "unpaid",
+        "pending_verification",
+        "paid",
+        "rejected",
+        "partial",
+        "refunded",
+      ],
+      default: "unpaid",
+      index: true,
+    },
 
-manualPayment: {
-  provider: {
-    type: String,
-    enum: ["bKash", "Nagad"],
-    default: undefined,
-  },
-  senderNumber: {
-    type: String,
-    trim: true,
-    default: "",
-  },
-  transactionId: {
-    type: String,
-    uppercase: true,
-    trim: true,
-    default: "",
-  },
-  amount: {
-    type: Number,
-    min: 0,
-    default: 0,
-  },
-  status: {
-    type: String,
-    enum: ["pending", "verified", "rejected"],
-    default: undefined,
-  },
-  submittedAt: {
-    type: Date,
-    default: null,
-  },
-  verifiedAt: {
-    type: Date,
-    default: null,
-  },
-  verifiedBy: {
-    type: Schema.Types.ObjectId,
-    ref: "User",
-    default: null,
-  },
-  adminNote: {
-    type: String,
-    trim: true,
-    maxlength: 500,
-    default: "",
-  },
-},
+    manualPayment: {
+      provider: {
+        type: String,
+        enum: ["bKash", "Nagad"],
+        default: undefined,
+      },
+      senderNumber: {
+        type: String,
+        trim: true,
+        default: "",
+      },
+      transactionId: {
+        type: String,
+        uppercase: true,
+        trim: true,
+        default: "",
+      },
+      amount: {
+        type: Number,
+        min: 0,
+        default: 0,
+      },
+      status: {
+        type: String,
+        enum: ["pending", "verified", "rejected"],
+        default: undefined,
+      },
+      submittedAt: {
+        type: Date,
+        default: null,
+      },
+      verifiedAt: {
+        type: Date,
+        default: null,
+      },
+      verifiedBy: {
+        type: Schema.Types.ObjectId,
+        ref: "User",
+        default: null,
+      },
+      adminNote: {
+        type: String,
+        trim: true,
+        maxlength: 500,
+        default: "",
+      },
+    },
 
     subtotal: {
       type: Number,
@@ -497,34 +497,35 @@ manualPayment: {
       index: true,
     },
 
-      orderType: {
-  type: String,
-  enum: ["regular", "pre_book"],
-  default: "regular",
-  index: true,
-},
+    orderType: {
+      type: String,
+      enum: ["regular", "pre_book"],
+      default: "regular",
+      index: true,
+    },
 
-preBookInfo: {
-  expectedDeliveryDate: {
-    type: Date,
-    default: null,
-  },
+    preBookInfo: {
+      expectedDeliveryDate: {
+        type: Date,
+        default: null,
+      },
 
-  advanceRequired: {
-    type: Boolean,
-    default: false,
-  },
+      advanceRequired: {
+        type: Boolean,
+        default: false,
+      },
 
-  advanceAmount: {
-    type: Number,
-    default: 0,
-  },
+      advanceAmount: {
+        type: Number,
+        default: 0,
+      },
 
-  remainingAmount: {
-    type: Number,
-    default: 0,
-  },
-},
+      remainingAmount: {
+        type: Number,
+        default: 0,
+      },
+    },
+
     refundStatus: {
       type: String,
       enum: ["none", "partial", "refunded"],
@@ -541,6 +542,27 @@ preBookInfo: {
       type: Schema.Types.ObjectId,
       ref: "Invoice",
       default: null,
+    },
+
+    /*
+     * Steadfast Courier integration info
+     */
+    steadfast: {
+      status: {
+        type: String,
+        enum: [
+          "not_sent",
+          "creating",
+          "created",
+          "needs_review",
+        ],
+        default: "not_sent",
+      },
+      invoice: { type: String, default: null },
+      consignmentId: { type: Number, default: null },
+      trackingCode: { type: String, default: null },
+      codAmount: { type: Number, default: null },
+      sentAt: { type: Date, default: null },
     },
 
     /*

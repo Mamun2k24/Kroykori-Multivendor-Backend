@@ -51,27 +51,76 @@ export const createInvoice = async (req, res) => {
 };
 
 // --- List (admin) ---
+// export const listInvoices = async (_req, res) => {
+//   try {
+//     const rows = await Invoice.find({})
+//       .sort({ issuedAt: -1 })
+//       .populate("userId", "name mobile");
+//     return res.json(rows);
+//   } catch (err) {
+//     console.error("listInvoices error:", err);
+//     return res.status(500).json({ message: "Server error" });
+//   }
+// };
+
+
 export const listInvoices = async (_req, res) => {
   try {
     const rows = await Invoice.find({})
       .sort({ issuedAt: -1 })
-      .populate("userId", "name mobile");
-    return res.json(rows);
+      .populate({
+        path: "orderId",
+        select: "customer address district paymentMethod",
+      })
+      .populate({
+        path: "userId",
+        select: "name mobile",
+      });
+
+    return res.status(200).json(rows);
   } catch (err) {
     console.error("listInvoices error:", err);
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({
+      message: "Server error",
+    });
   }
 };
 
 // --- List mine (user) ---
+// export const listMyInvoices = async (req, res) => {
+//   try {
+//     const userId = req.user?.id || req.user?._id;
+//     const rows = await Invoice.find({ userId }).sort({ issuedAt: -1 });
+//     return res.json(rows);
+//   } catch (err) {
+//     console.error("listMyInvoices error:", err);
+//     return res.status(500).json({ message: "Server error" });
+//   }
+// };
+
 export const listMyInvoices = async (req, res) => {
   try {
     const userId = req.user?.id || req.user?._id;
-    const rows = await Invoice.find({ userId }).sort({ issuedAt: -1 });
-    return res.json(rows);
+
+    if (!userId) {
+      return res.status(401).json({
+        message: "Authentication required",
+      });
+    }
+
+    const rows = await Invoice.find({ userId })
+      .sort({ issuedAt: -1 })
+      .populate({
+        path: "orderId",
+        select: "customer address district paymentMethod",
+      });
+
+    return res.status(200).json(rows);
   } catch (err) {
     console.error("listMyInvoices error:", err);
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({
+      message: "Server error",
+    });
   }
 };
 
